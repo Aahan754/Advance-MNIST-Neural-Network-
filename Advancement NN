@@ -1,0 +1,164 @@
+import numpy as np
+from sklearn.datasets import fetch_openml
+from sklearn.model_selection import train_test_split
+
+# =====================================================================
+# 1. PURE ARCHITECTURAL ACTIVATION FUNCTIONS
+# =====================================================================
+
+def relu(Z):
+    """
+    Rectified Linear Unit (ReLU) Activation.
+    Turns negative raw values into 0, leaving positive scores unchanged.
+    """
+    return np.maximum(0, Z)
+
+def relu_derivative(Z):
+    """
+    Derivative of ReLU.
+    Acts as a logical gate letting gradients pass only if the neuron fired (>0).
+    """
+    return (Z > 0).astype(float)
+
+def softmax(Z):
+    """
+    Pure Softmax Equation.
+    Must sum perfectly to 1.0 per row to prevent gradient math distortions
+    and avoid creating 'ghost gradients' that cap learning early.
+    """
+    max_Z = np.max(Z, axis=1, keepdims=True)  # Overflow stability trick
+    exp_Z = np.exp(Z - max_Z)
+    return exp_Z / np.sum(exp_Z, axis=1, keepdims=True)
+
+
+# =====================================================================
+# 2. TUNED NEURAL NETWORK CLASS WITH MOMENTUM
+# =====================================================================
+
+class AdvancedDigitClassifier:
+    def __init__(self, input_size=784, hidden_size=128, output_size=10, learning_rate=0.15):
+        """
+        Initializes the architecture framework with 128 hidden neurons, a highly stable
+        learning rate (0.15), and zero-filled velocity tracking vectors.
+        """
+        self.lr = learning_rate
+        
+        # --- Weight and Bias Initialization ---
+        self.W1 = np.random.randn(input_size, hidden_size) * np.sqrt(2.0 / input_size)
+        self.b1 = np.zeros((1, hidden_size))
+        self.W2 = np.random.randn(hidden_size, output_size) * np.sqrt(1.0 / hidden_size)
+        self.b2 = np.zeros((1, output_size))
+        
+        # --- Momentum Cache Vectors ---
+        self.vW1, self.vb1 = np.zeros_like(self.W1), np.zeros_like(self.b1)
+        self.vW2, self.vb2 = np.zeros_like(self.W2), np.zeros_like(self.b2)
+        self.beta = 0.9  
+
+    def forward(self, X):
+        self.Z1 = np.dot(X, self.W1) + self.b1
+        self.A1 = relu(self.Z1)
+        self.Z2 = np.dot(self.A1, self.W2) + self.b2
+        self.A2 = softmax(self.Z2)
+        return self.A2
+
+    def backward(self, X, y_one_hot, y_hat):
+        m = X.shape[0]  # Isolate exactly the row count integer for perfect batch scaling
+        
+        # --- Output Layer Error ---
+        dZ2 = y_hat - y_one_hot
+        dW2 = np.dot(self.A1.T, dZ2) / m
+        db2 = np.sum(dZ2, axis=0, keepdims=True) / m
+        
+        # --- Hidden Layer Error ---
+        dA1 = np.dot(dZ2, self.W2.T)
+        dZ1 = dA1 * relu_derivative(self.Z1)
+        dW1 = np.dot(X.T, dZ1) / m
+        db1 = np.sum(dZ1, axis=0, keepdims=True) / m
+        
+        # --- Physics Update: Momentum Vector Blending ---
+        self.vW2 = self.beta * self.vW2 + (1 - self.beta) * dW2
+        self.vb2 = self.beta * self.vb2 + (1 - self.beta) * db2
+        self.vW1 = self.beta * self.vW1 + (1 - self.beta) * dW1
+        self.vb1 = self.beta * self.vb1 + (1 - self.beta) * db1
+        
+        # Apply the adjustments
+        self.W2 -= self.lr * self.vW2
+        self.b2 -= self.lr * self.vb2
+        self.W1 -= self.lr * self.vW1
+        self.b1 -= self.lr * self.vb1
+
+    def train(self, X_train, y_train, batch_size=64, epochs=10):
+        num_samples = X_train.shape[0]  # Fixed shape parsing to ensure clean indexing arrays
+        
+        for epoch in range(epochs):
+            permutation = np.random.permutation(num_samples)
+            X_shuffled = X_train[permutation]
+            y_shuffled = y_train[permutation]
+            
+            for i in range(0, num_samples, batch_size):
+                X_batch = X_shuffled[i : i + batch_size]
+                y_batch = y_shuffled[i : i + batch_size]
+                
+                m_batch = y_batch.shape[0]
+                y_one_hot = np.zeros((m_batch, 10))
+                y_one_hot[np.arange(m_batch), y_batch] = 1
+                
+                y_hat = self.forward(X_batch)
+                self.backward(X_batch, y_one_hot, y_hat)
+            
+            full_predictions = np.argmax(self.forward(X_train), axis=1)
+            accuracy = np.mean(full_predictions == y_train) * 100
+            print(f"Epoch {epoch + 1:2d}/{epochs} Complete | Training Accuracy: {accuracy:.2f}%")
+
+
+# =====================================================================
+# 3. PIPELINE DATA INGESTION ENGINE
+# =====================================================================
+
+if __name__ == "__main__":
+    print("Fetching authentic MNIST handwriting dataset online (approx. 50MB)...")
+    mnist = fetch_openml('mnist_784', version=1, as_frame=False, parser='liac-arff')
+    
+    X = mnist.data / 255.0
+    y = mnist.target.astype(int)
+
+    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=10000, random_state=42)
+
+    nn = AdvancedDigitClassifier(input_size=784, hidden_size=128, output_size=10, learning_rate=0.15)
+    
+    print("\nBeginning Training Cycle (Mini-Batches & Momentum Optimization)...")
+    nn.train(X_train, y_train, batch_size=64, epochs=10)
+    
+    # =====================================================================
+    # 4. FINAL TEST EVALUATION (Unseen Data)
+    # =====================================================================
+    print("\nEvaluating network capabilities on pristine, unseen validation samples...")
+    test_predictions = np.argmax(nn.forward(X_test), axis=1)
+    test_accuracy = np.mean(test_predictions == y_test) * 100
+    print(f"Final Test Set Evaluation Accuracy: {test_accuracy:.2f}%")
+
+    # =====================================================================
+    # 5. SAVE THE TRAINED MODEL BRAIN
+    # =====================================================================
+    print("\n[Saving Model Data] Preserving optimized weight arrays to disk...")
+    np.save('W1.npy', nn.W1)
+    np.save('b1.npy', nn.b1)
+    np.save('W2.npy', nn.W2)
+    np.save('b2.npy', nn.b2)
+    print("Save Complete!")
+
+    # =====================================================================
+    # 6. COMPUTE AND VISUALIZE THE CONFUSION MATRIX
+    # =====================================================================
+    print("\n[Analyzing Errors] Generating Confusion Matrix for the Test Set...\n")
+    
+    matrix = np.zeros((10, 10), dtype=int)
+    for actual, pred in zip(y_test, test_predictions):
+        matrix[actual, pred] += 1
+        
+    print("      Predicted Digits (0-9)")
+    print("      ---------------------------------------------------------")
+    for digit in range(10):
+        row_string = " ".join(f"{matrix[digit, c]:4d}" for c in range(10))
+        print(f"Act {digit}| {row_string}")
+    print("      ---------------------------------------------------------")
